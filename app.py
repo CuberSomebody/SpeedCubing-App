@@ -1,0 +1,612 @@
+import http.server
+import socketserver
+import webbrowser
+import threading
+import json
+import urllib.parse
+import time
+
+PORT = 8080
+
+COMMENTS_STORE = []
+CHAT_STORE = [
+    {"user": "System", "text": "Welcome to the Speedcube Global Chat! Say hi to other cubers.", "time": time.strftime('%H:%M')}
+]
+
+HTML_CONTENT = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OG Speedcube Simulator Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;700;800&family=JetBrains+Mono:wght@700&display=swap');
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #08090d; color: #f3f4f6; overflow: hidden; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        .ui-layer { position: relative; z-index: 10; pointer-events: none; }
+        .pointer-events-auto { pointer-events: auto; }
+        .glass-panel { background: rgba(13, 16, 26, 0.90); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.12); }
+        .btn-action { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+        .btn-action:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(99, 102, 241, 0.4); }
+        .btn-action:active { transform: translateY(0); }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
+    </style>
+</head>
+<body class="select-none">
+
+    <div id="canvas-container"></div>
+
+    <div class="ui-layer h-screen flex flex-col justify-between p-6">
+        <!-- Top Bar -->
+        <div class="flex justify-between items-center w-full">
+            <div class="glass-panel px-5 py-3 rounded-2xl flex items-center gap-3 pointer-events-auto">
+                <div class="p-2.5 bg-indigo-600 rounded-xl text-white shadow-lg shadow-indigo-600/40">
+                    <i data-lucide="box" class="w-6 h-6"></i>
+                </div>
+                <div>
+                    <h1 class="font-extrabold text-xl text-white tracking-wide">SPEEDCUBE <span class="text-xs px-2.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 font-bold ml-1">OG</span></h1>
+                    <div class="flex items-center gap-2 mt-0.5">
+                        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                        <p id="online-count" class="text-xs text-gray-300 font-semibold">1 Online (You)</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Timer -->
+            <div class="glass-panel px-8 py-3 rounded-2xl flex flex-col items-center pointer-events-auto">
+                <span id="timer" class="font-mono font-bold text-3xl text-white tracking-wider">00:00.00</span>
+                <span id="timer-label" class="text-[10px] uppercase tracking-widest text-indigo-400 font-bold mt-0.5">Solve Timer</span>
+            </div>
+
+            <div class="flex gap-3 pointer-events-auto">
+                <button onclick="scramblePuzzle()" class="btn-action glass-panel px-5 py-3 rounded-2xl flex items-center gap-2 text-sm font-bold text-gray-100 hover:bg-white/10">
+                    <i data-lucide="shuffle" class="w-4 h-4 text-indigo-400"></i>
+                    <span>Scramble</span>
+                </button>
+                <button onclick="resetPuzzle()" class="btn-action bg-rose-600 hover:bg-rose-500 text-white px-6 py-3 rounded-2xl flex items-center gap-2 text-sm font-extrabold shadow-lg shadow-rose-900/40">
+                    <i data-lucide="rotate-ccw" class="w-4 h-4"></i>
+                    <span>Reset</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Left Floating Chat Widget -->
+        <div class="absolute left-6 top-32 glass-panel p-4 rounded-2xl w-80 pointer-events-auto space-y-3 border border-indigo-500/30 shadow-xl flex flex-col h-72">
+            <h3 class="text-xs font-extrabold uppercase tracking-wider text-indigo-400 flex items-center gap-1.5">
+                <i data-lucide="globe" class="w-3.5 h-3.5"></i> Live Cuber Chat
+            </h3>
+            <div id="chat-messages" class="flex-1 overflow-y-auto space-y-2 pr-1 text-xs"></div>
+            <div class="space-y-2 pt-1 border-t border-white/10">
+                <div class="flex gap-1.5">
+                    <input id="chat-user" type="text" maxlength="15" class="w-28 bg-black/40 border border-white/10 rounded-xl px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 placeholder-gray-500" placeholder="Name">
+                    <input id="chat-input" type="text" onkeydown="if(event.key==='Enter') sendChatMessage()" class="flex-1 bg-black/40 border border-white/10 rounded-xl px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 placeholder-gray-500" placeholder="Type a message...">
+                </div>
+                <button onclick="sendChatMessage()" class="btn-action w-full bg-indigo-600 hover:bg-indigo-500 text-white py-1.5 rounded-xl text-xs font-bold shadow-md">Send Message</button>
+            </div>
+        </div>
+
+        <!-- Right Floating Comment Box Widget -->
+        <div class="absolute right-6 top-32 glass-panel p-4 rounded-2xl w-80 pointer-events-auto space-y-3 border border-indigo-500/30 shadow-xl">
+            <h3 class="text-xs font-extrabold uppercase tracking-wider text-indigo-400 flex items-center gap-1.5">
+                <i data-lucide="message-square" class="w-3.5 h-3.5"></i> Owner Feedback Box
+            </h3>
+            <p class="text-[11px] text-gray-300 leading-snug font-medium">Have a comment? Type in this comment box and we will acknowledge it.</p>
+            <div class="space-y-2">
+                <textarea id="user-comment" rows="2" class="w-full bg-black/40 border border-white/10 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-indigo-500 resize-none placeholder-gray-500" placeholder="Type your comment here..."></textarea>
+                <div class="flex justify-between items-center">
+                    <span id="comment-status" class="text-[10px] text-emerald-400 font-bold"></span>
+                    <button onclick="submitComment()" class="btn-action bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-1.5 rounded-xl text-xs font-bold shadow-md">Send to Owner</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bottom Controls Bar -->
+        <div class="flex justify-between items-end w-full">
+            <!-- Cube Size Selector -->
+            <div class="glass-panel p-4 rounded-2xl flex flex-col gap-3 pointer-events-auto w-56">
+                <span class="text-xs font-bold uppercase tracking-wider text-indigo-400">Select Cube Size</span>
+                <div class="grid grid-cols-3 gap-2">
+                    <button onclick="setCubeDim(2)" id="btn-dim-2" class="px-2.5 py-2.5 rounded-xl text-xs font-extrabold bg-white/10 hover:bg-indigo-600 text-white transition">2x2</button>
+                    <button onclick="setCubeDim(3)" id="btn-dim-3" class="px-2.5 py-2.5 rounded-xl text-xs font-extrabold bg-indigo-600 text-white transition">3x3</button>
+                    <button onclick="setCubeDim(4)" id="btn-dim-4" class="px-2.5 py-2.5 rounded-xl text-xs font-extrabold bg-white/10 hover:bg-indigo-600 text-white transition">4x4</button>
+                </div>
+            </div>
+
+            <!-- Face Rotation Controls -->
+            <div class="glass-panel p-4 rounded-2xl flex flex-col items-center gap-3 pointer-events-auto">
+                <span class="text-xs font-bold uppercase tracking-wider text-gray-400">Turn Faces</span>
+                <div class="flex gap-2">
+                    <button onclick="applyMove('R')" class="btn-action px-5 py-2.5 rounded-xl font-mono font-bold text-base bg-white/10 hover:bg-indigo-600 text-white">R</button>
+                    <button onclick="applyMove('L')" class="btn-action px-5 py-2.5 rounded-xl font-mono font-bold text-base bg-white/10 hover:bg-indigo-600 text-white">L</button>
+                    <button onclick="applyMove('U')" class="btn-action px-5 py-2.5 rounded-xl font-mono font-bold text-base bg-white/10 hover:bg-indigo-600 text-white">U</button>
+                    <button onclick="applyMove('D')" class="btn-action px-5 py-2.5 rounded-xl font-mono font-bold text-base bg-white/10 hover:bg-indigo-600 text-white">D</button>
+                    <button onclick="applyMove('F')" class="btn-action px-5 py-2.5 rounded-xl font-mono font-bold text-base bg-white/10 hover:bg-indigo-600 text-white">F</button>
+                    <button onclick="applyMove('B')" class="btn-action px-5 py-2.5 rounded-xl font-mono font-bold text-base bg-white/10 hover:bg-indigo-600 text-white">B</button>
+                </div>
+            </div>
+
+            <div class="glass-panel px-4 py-3 rounded-2xl text-xs text-gray-300 pointer-events-auto">
+                💡 <b>Drag Background:</b> Rotate 3D View | <b>Keys:</b> R, L, U, D, F, B
+            </div>
+        </div>
+    </div>
+
+    <script>
+        lucide.createIcons();
+
+        document.getElementById('chat-user').value = "Cuber_" + Math.floor(Math.random() * 900 + 100);
+
+        async function fetchChatMessages() {
+            try {
+                const res = await fetch('/api/chat/messages');
+                if (res.ok) {
+                    const messages = await res.json();
+                    const container = document.getElementById('chat-messages');
+                    container.innerHTML = messages.map(m => `
+                        <div class="leading-tight">
+                            <span class="font-extrabold text-indigo-400">${escapeHtml(m.user)}:</span> 
+                            <span class="text-gray-200">${escapeHtml(m.text)}</span>
+                        </div>
+                    `).join('');
+                    container.scrollTop = container.scrollHeight;
+                }
+            } catch (e) {}
+        }
+
+        async function sendChatMessage() {
+            const user = document.getElementById('chat-user').value.trim() || "Anonymous";
+            const text = document.getElementById('chat-input').value.trim();
+            if (!text) return;
+
+            try {
+                await fetch('/api/chat/send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user, text })
+                });
+                document.getElementById('chat-input').value = "";
+                fetchChatMessages();
+            } catch (e) {}
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+
+        setInterval(fetchChatMessages, 1500);
+        fetchChatMessages();
+
+        async function submitComment() {
+            const txt = document.getElementById('user-comment').value.trim();
+            const status = document.getElementById('comment-status');
+            if (!txt) {
+                status.innerText = "Please type something first!";
+                status.className = "text-[10px] text-rose-400 font-bold";
+                return;
+            }
+            try {
+                const res = await fetch('/api/comment', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ comment: txt })
+                });
+                if (res.ok) {
+                    status.innerText = "Sent! Owner acknowledged ✔️";
+                    status.className = "text-[10px] text-emerald-400 font-bold";
+                    document.getElementById('user-comment').value = "";
+                    setTimeout(() => { status.innerText = ""; }, 4000);
+                }
+            } catch (err) {
+                status.innerText = "Failed to send.";
+                status.className = "text-[10px] text-rose-400 font-bold";
+            }
+        }
+
+        const channel = new BroadcastChannel('speedcube_real_players');
+        let activePlayers = 1;
+        setInterval(() => { channel.postMessage({ type: 'ping', id: clientId }); }, 2000);
+        const clientId = Math.random().toString(36).substring(2, 9);
+        let peers = new Map();
+        channel.onmessage = (event) => { if (event.data.type === 'ping') { peers.set(event.data.id, Date.now()); } };
+        setInterval(() => {
+            const now = Date.now();
+            let count = 1;
+            for (let [id, timestamp] of peers.entries()) {
+                if (now - timestamp > 5000) { peers.delete(id); } else { count++; }
+            }
+            activePlayers = count;
+            document.getElementById('online-count').innerText = `${activePlayers} Online (${activePlayers === 1 ? 'You' : 'Real Players'})`;
+        }, 3000);
+
+        let startTime = null;
+        let timerInterval = null;
+        let timerStarted = false;
+        let isSolvedState = true;
+
+        function startTimer() {
+            if (timerStarted || isSolvedState) return;
+            timerStarted = true;
+            startTime = Date.now();
+            document.getElementById('timer-label').innerText = "Solve Timer";
+            document.getElementById('timer-label').className = "text-[10px] uppercase tracking-widest text-indigo-400 font-bold mt-0.5";
+            if (timerInterval) clearInterval(timerInterval);
+            timerInterval = setInterval(() => {
+                const elapsed = Date.now() - startTime;
+                const mins = Math.floor(elapsed / 60000).toString().padStart(2, '0');
+                const secs = Math.floor((elapsed % 60000) / 1000).toString().padStart(2, '0');
+                const centis = Math.floor((elapsed % 1000) / 10).toString().padStart(2, '0');
+                document.getElementById('timer').innerText = `${mins}:${secs}.${centis}`;
+            }, 10);
+        }
+
+        function stopTimer() {
+            if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+            timerStarted = false;
+        }
+
+        function resetTimer() {
+            stopTimer();
+            isSolvedState = true;
+            document.getElementById('timer').innerText = "00:00.00";
+            document.getElementById('timer-label').innerText = "Solved";
+            document.getElementById('timer-label').className = "text-[10px] uppercase tracking-widest text-emerald-400 font-bold mt-0.5";
+        }
+
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x08090d);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(4.2, 3.5, 5.2);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        container.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.9);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.4);
+        dirLight.position.set(10, 20, 15);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        const standardColors = {
+            R: 0xb90000, L: 0xff5900, U: 0xffffff, D: 0xffd500, F: 0x009b48, B: 0x0046ad
+        };
+
+        let cubeDim = 3;
+        const cubeGroup = new THREE.Group();
+        scene.add(cubeGroup);
+
+        const cubies = [];
+        let isAnimating = false;
+        let initialCubieStates = [];
+
+        function buildCube() {
+            while(cubeGroup.children.length > 0){ cubeGroup.remove(cubeGroup.children[0]); }
+            cubies.length = 0;
+
+            const cubieSize = 0.96;
+            const offset = (cubeDim - 1) / 2;
+            const geom = new THREE.BoxGeometry(cubieSize, cubieSize, cubieSize);
+
+            for (let x = 0; x < cubeDim; x++) {
+                for (let y = 0; y < cubeDim; y++) {
+                    for (let z = 0; z < cubeDim; z++) {
+                        const posX = x - offset;
+                        const posY = y - offset;
+                        const posZ = z - offset;
+
+                        const mats = [
+                            new THREE.MeshStandardMaterial({ color: x === cubeDim - 1 ? standardColors.R : 0x111115, roughness: 0.15 }),
+                            new THREE.MeshStandardMaterial({ color: x === 0 ? standardColors.L : 0x111115, roughness: 0.15 }),
+                            new THREE.MeshStandardMaterial({ color: y === cubeDim - 1 ? standardColors.U : 0x111115, roughness: 0.15 }),
+                            new THREE.MeshStandardMaterial({ color: y === 0 ? standardColors.D : 0x111115, roughness: 0.15 }),
+                            new THREE.MeshStandardMaterial({ color: z === cubeDim - 1 ? standardColors.F : 0x111115, roughness: 0.15 }),
+                            new THREE.MeshStandardMaterial({ color: z === 0 ? standardColors.B : 0x111115, roughness: 0.15 })
+                        ];
+
+                        const cubie = new THREE.Mesh(geom, mats);
+                        cubie.position.set(posX, posY, posZ);
+                        cubie.castShadow = true;
+                        cubie.receiveShadow = true;
+
+                        cubeGroup.add(cubie);
+                        cubies.push(cubie);
+                    }
+                }
+            }
+            saveInitialState();
+            resetTimer();
+        }
+
+        function saveInitialState() {
+            initialCubieStates = cubies.map(c => ({
+                x: c.position.x,
+                y: c.position.y,
+                z: c.position.z,
+                rx: c.rotation.x,
+                ry: c.rotation.y,
+                rz: c.rotation.z
+            }));
+        }
+
+        function checkCubeSolved() {
+            if (isSolvedState) return;
+            const round = val => Math.round(val * 100) / 100;
+            for (let i = 0; i < cubies.length; i++) {
+                const c = cubies[i];
+                const init = initialCubieStates[i];
+                if (round(c.position.x) !== round(init.x) ||
+                    round(c.position.y) !== round(init.y) ||
+                    round(c.position.z) !== round(init.z)) {
+                    return;
+                }
+            }
+            // Cube is fully solved! Stop timer and mark as solved.
+            stopTimer();
+            isSolvedState = true;
+            document.getElementById('timer-label').innerText = "Solved ✔️";
+            document.getElementById('timer-label').className = "text-[10px] uppercase tracking-widest text-emerald-400 font-bold mt-0.5";
+        }
+
+        function setCubeDim(dim) {
+            cubeDim = dim;
+            [2, 3, 4].forEach(d => {
+                const btn = document.getElementById(`btn-dim-${d}`);
+                if (d === dim) {
+                    btn.className = "px-2.5 py-2.5 rounded-xl text-xs font-extrabold bg-indigo-600 text-white transition";
+                } else {
+                    btn.className = "px-2.5 py-2.5 rounded-xl text-xs font-extrabold bg-white/10 hover:bg-indigo-600 text-white transition";
+                }
+            });
+            if (dim === 2) camera.position.set(3.5, 3.0, 4.5);
+            else if (dim === 3) camera.position.set(4.2, 3.5, 5.2);
+            else if (dim === 4) camera.position.set(5.5, 4.5, 6.8);
+            
+            resetPuzzle();
+        }
+
+        function applyMove(move, duration = 150) {
+            if (isAnimating) return;
+            isSolvedState = false;
+            startTimer();
+            isAnimating = true;
+
+            const pivot = new THREE.Group();
+            scene.add(pivot);
+
+            const axis = new THREE.Vector3();
+            let targetCubies = [];
+            const offset = (cubeDim - 1) / 2;
+            const round = val => Math.round(val * 100) / 100;
+
+            if (move === 'R') {
+                axis.set(1, 0, 0);
+                targetCubies = cubies.filter(c => round(c.position.x) === round(offset));
+            } else if (move === 'Rw') {
+                axis.set(1, 0, 0);
+                targetCubies = cubies.filter(c => round(c.position.x) >= round(offset - 1));
+            } else if (move === 'L') {
+                axis.set(-1, 0, 0);
+                targetCubies = cubies.filter(c => round(c.position.x) === round(-offset));
+            } else if (move === 'Lw') {
+                axis.set(-1, 0, 0);
+                targetCubies = cubies.filter(c => round(c.position.x) <= round(-offset + 1));
+            } else if (move === 'U') {
+                axis.set(0, 1, 0);
+                targetCubies = cubies.filter(c => round(c.position.y) === round(offset));
+            } else if (move === 'Uw') {
+                axis.set(0, 1, 0);
+                targetCubies = cubies.filter(c => round(c.position.y) >= round(offset - 1));
+            } else if (move === 'D') {
+                axis.set(0, -1, 0);
+                targetCubies = cubies.filter(c => round(c.position.y) === round(-offset));
+            } else if (move === 'Dw') {
+                axis.set(0, -1, 0);
+                targetCubies = cubies.filter(c => round(c.position.y) <= round(-offset + 1));
+            } else if (move === 'F') {
+                axis.set(0, 0, 1);
+                targetCubies = cubies.filter(c => round(c.position.z) === round(offset));
+            } else if (move === 'Fw') {
+                axis.set(0, 0, 1);
+                targetCubies = cubies.filter(c => round(c.position.z) >= round(offset - 1));
+            } else if (move === 'B') {
+                axis.set(0, 0, -1);
+                targetCubies = cubies.filter(c => round(c.position.z) === round(-offset));
+            } else if (move === 'Bw') {
+                axis.set(0, 0, -1);
+                targetCubies = cubies.filter(c => round(c.position.z) <= round(-offset + 1));
+            }
+
+            targetCubies.forEach(c => pivot.attach(c));
+
+            const startTime = performance.now();
+            const targetAngle = -Math.PI / 2;
+
+            function animateRotation(now) {
+                const elapsed = now - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+                const currentAngle = targetAngle * progress;
+
+                pivot.rotation.x = axis.x * currentAngle;
+                pivot.rotation.y = axis.y * currentAngle;
+                pivot.rotation.z = axis.z * currentAngle;
+
+                if (progress < 1) {
+                    requestAnimationFrame(animateRotation);
+                } else {
+                    pivot.updateMatrixWorld();
+                    targetCubies.forEach(c => {
+                        cubeGroup.attach(c);
+                        c.position.x = round(c.position.x);
+                        c.position.y = round(c.position.y);
+                        c.position.z = round(c.position.z);
+                    });
+                    scene.remove(pivot);
+                    isAnimating = false;
+                    checkCubeSolved();
+                }
+            }
+
+            requestAnimationFrame(animateRotation);
+        }
+
+        function scramblePuzzle() {
+            if (isAnimating) return;
+            resetTimer();
+            isSolvedState = false;
+            const baseMoves = ['R', 'L', 'U', 'D', 'F', 'B'];
+            const wideMoves = cubeDim === 4 ? ['Rw', 'Lw', 'Uw', 'Dw', 'Fw', 'Bw'] : [];
+            const moves = [...baseMoves, ...wideMoves];
+            
+            let lastFace = '';
+            let count = 0;
+
+            function step() {
+                if (count < 20) {
+                    let randomMove;
+                    do {
+                        randomMove = moves[Math.floor(Math.random() * moves.length)];
+                    } while (randomMove[0] === lastFace);
+                    lastFace = randomMove[0];
+
+                    applyMove(randomMove, 40);
+                    count++;
+                    setTimeout(step, 50);
+                } else {
+                    stopTimer();
+                    document.getElementById('timer').innerText = "00:00.00";
+                    document.getElementById('timer-label').innerText = "Inspection / Ready";
+                    document.getElementById('timer-label').className = "text-[10px] uppercase tracking-widest text-indigo-400 font-bold mt-0.5";
+                }
+            }
+            step();
+        }
+
+        function resetPuzzle() {
+            buildCube();
+        }
+
+        window.addEventListener('keydown', (e) => {
+            const key = e.key.toUpperCase();
+            if (['R', 'L', 'U', 'D', 'F', 'B'].includes(key)) {
+                applyMove(key);
+            }
+        });
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        setCubeDim(3);
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+</html>
+"""
+
+class SpeedcubeHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/api/chat/messages':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(CHAT_STORE).encode('utf-8'))
+        elif self.path == '/api/comments':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(COMMENTS_STORE).encode('utf-8'))
+        else:
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            self.wfile.write(HTML_CONTENT.encode('utf-8'))
+
+    def do_POST(self):
+        content_length = int(self.headers.get('Content-Length', 0))
+        post_data = self.rfile.read(content_length)
+        
+        if self.path == '/api/chat/send':
+            try:
+                data = json.loads(post_data.decode('utf-8'))
+                user = data.get('user', 'Anonymous').strip()
+                text = data.get('text', '').strip()
+                if text:
+                    timestamp = time.strftime('%H:%M')
+                    CHAT_STORE.append({'user': user, 'text': text, 'time': timestamp})
+                    if len(CHAT_STORE) > 50:
+                        CHAT_STORE.pop(0)
+                
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'status': 'sent'}).encode('utf-8'))
+            except Exception as e:
+                self.send_response(400)
+                self.end_headers()
+                
+        elif self.path == '/api/comment':
+            try:
+                data = json.loads(post_data.decode('utf-8'))
+                comment_text = data.get('comment', '').strip()
+                if comment_text:
+                    timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+                    COMMENTS_STORE.append({'time': timestamp, 'text': comment_text})
+                    print(f"\n📩 [OWNER NOTIFICATION] New user comment received ({timestamp}): \"{comment_text}\"")
+                
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'status': 'acknowledged'}).encode('utf-8'))
+            except Exception as e:
+                self.send_response(400)
+                self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        pass
+
+def start_server():
+    with socketserver.TCPServer(("", PORT), SpeedcubeHandler) as httpd:
+        httpd.serve_forever()
+
+if __name__ == "__main__":
+    print("🚀 Speedcube App running with fixed auto-stopping solve timer...")
+    server_thread = threading.Thread(target=start_server, daemon=True)
+    server_thread.start()
+    
+    time.sleep(1)
+    webbrowser.open(f"http://localhost:{PORT}")
+    
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nStopping Python App.")
